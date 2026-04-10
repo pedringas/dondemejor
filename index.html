@@ -245,6 +245,12 @@
         </div>
     </div>
 
+    <!-- Modal Lightbox Ampliador de Imágenes -->
+    <div id="lightboxModal" class="modal-overlay hidden" style="z-index: 3500; background:rgba(0,0,0,0.9);">
+        <button onclick="closeLightbox()" style="position:absolute; top:20px; right:20px; background:rgba(255,255,255,0.2); border:none; color:white; width:45px; height:45px; border-radius:50%; font-size:2rem; cursor:pointer;">&times;</button>
+        <img id="lightboxImg" src="" alt="Ampliación" style="max-width:90%; max-height:90vh; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.5); object-fit:contain;">
+    </div>
+
     <!-- Script de configuración -->
     <script src="js/app.js"></script>
     <script async defer id="googleMapsScript"></script>

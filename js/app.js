@@ -419,6 +419,56 @@ window.initMapService = function() {
 };
 
 // ==========================================
+// Utils & Helpers
+// ==========================================
+function getMockData(query) {
+    if (query.toLowerCase().includes("empanada")) {
+        return mockPlacesData.filter(p => p.name.toLowerCase().includes("empanada"));
+    }
+    return mockPlacesData;
+}
+
+function getDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371; // Radio de la Tierra en km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c; // Distancia en km
+}
+
+// Funciones de Carrusel y Lightbox
+window.scrollCarousel = function(amount) {
+    const carousel = document.getElementById('modalCarousel');
+    if (carousel) {
+        carousel.scrollLeft += amount;
+    }
+};
+
+window.openLightbox = function(url) {
+    const modal = document.getElementById('lightboxModal');
+    const img = document.getElementById('lightboxImg');
+    if (modal && img) {
+        img.src = url;
+        modal.classList.remove('hidden');
+    }
+};
+
+window.closeLightbox = function() {
+    const modal = document.getElementById('lightboxModal');
+    if (modal) {
+        modal.classList.add('hidden');
+    }
+};
+
+// Cerrar Lightbox con click fuera de la imagen
+document.getElementById('lightboxModal').addEventListener('click', (e) => {
+    if (e.target.id === 'lightboxModal') closeLightbox();
+});
+
+// ==========================================
 // Lógica de Búsqueda
 // ==========================================
 function handleSearch(e) {
@@ -467,7 +517,32 @@ function executeSearch(query) {
         placesService.textSearch(request, (results, status) => {
             loadingIndicator.classList.add('hidden');
             if (status === google.maps.places.PlacesServiceStatus.OK && results) {
-                results.sort((a,b) => (b.rating || 0) - (a.rating || 0));
+                if(userLocation) {
+                    let uLat = typeof userLocation.lat === 'function' ? userLocation.lat() : userLocation.lat;
+                    let uLng = typeof userLocation.lng === 'function' ? userLocation.lng() : userLocation.lng;
+                    results.forEach(p => {
+                        if(p.geometry && p.geometry.location) {
+                            let pLat = typeof p.geometry.location.lat === 'function' ? p.geometry.location.lat() : p.geometry.location.lat;
+                            let pLng = typeof p.geometry.location.lng === 'function' ? p.geometry.location.lng() : p.geometry.location.lng;
+                            p.distanceKm = getDistance(uLat, uLng, pLat, pLng);
+                        } else {
+                            p.distanceKm = 9999;
+                        }
+                    });
+                    
+                    // Ordenamos: Primero los que esten a menos de 0.6km, y si ambos lo estan, por rating.
+                    results.sort((a,b) => {
+                        const aClose = a.distanceKm < 0.6;
+                        const bClose = b.distanceKm < 0.6;
+                        if(aClose && !bClose) return -1;
+                        if(!aClose && bClose) return 1;
+                        // si ambos estan cerca o lejos, gana el rating
+                        return (b.rating || 0) - (a.rating || 0);
+                    });
+                } else {
+                    results.sort((a,b) => (b.rating || 0) - (a.rating || 0));
+                }
+                
                 currentResults = results;
                 viewControls.classList.remove('hidden');
                 
@@ -583,6 +658,12 @@ function renderResultsList() {
                     <h3 class="place-name">${place.name}</h3>
                     ${ratingHTML}
                 </div>
+                ${place.distanceKm != null && place.distanceKm < 9999 ? `
+                    <div style="font-size:0.85rem; font-weight:bold; margin-bottom:0.8rem; color:${place.distanceKm < 0.6 ? '#10b981' : 'var(--text-muted)'}; display:flex; align-items:center; gap:0.3rem;">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+                        ${place.distanceKm < 0.6 ? `¡Muy Cerca! A solo ${(place.distanceKm*1000).toFixed(0)} metros` : `${place.distanceKm.toFixed(1)} km de distancia`}
+                    </div>
+                ` : ''}
                 <p class="place-address">${place.formatted_address || place.vicinity || 'Córdoba, Argentina'}</p>
                 <div class="card-footer">
                     ${openStatusHtml}
@@ -720,7 +801,7 @@ function openPlaceDetails(placeContext, imageUrl, statusHtml, ratingHTML) {
 
         placesService.getDetails({
             placeId: placeContext.place_id,
-            fields: ['name', 'formatted_address', 'formatted_phone_number', 'website', 'rating', 'user_ratings_total', 'reviews', 'opening_hours', 'url']
+            fields: ['name', 'formatted_address', 'formatted_phone_number', 'website', 'rating', 'user_ratings_total', 'reviews', 'opening_hours', 'url', 'photos']
         }, (placeDetails, status) => {
             if (status === google.maps.places.PlacesServiceStatus.OK) {
                 renderModalContent(placeDetails, imageUrl, statusHtml, ratingHTML);
@@ -749,11 +830,11 @@ function renderModalContent(place, imageUrl, statusHtml, ratingHTML) {
             <a href="${place.website}" target="_blank">Sitio Web Oficial</a>
            </li>` : '';
 
-    const directionsUrl = place.url || `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(place.formatted_address || place.name)}`;
+    const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(place.formatted_address || place.name)}`;
     const mapHtml = `<li>
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
             <span style="flex-grow:1;">${place.formatted_address || 'Córdoba, Argentina'}</span>
-            <a href="${directionsUrl}" target="_blank" style="margin-left:auto; display:flex; align-items:center; gap:0.25rem; font-size:0.9rem; color:#f43f5e; font-weight:bold; background:rgba(244,63,94,0.1); padding:0.4rem 0.8rem; border-radius:8px; text-decoration:none; white-space:nowrap;">📍 Cómo llegar</a>
+            <a href="${directionsUrl}" target="_blank" rel="noopener noreferrer" style="margin-left:auto; display:flex; align-items:center; gap:0.25rem; font-size:0.9rem; color:#f43f5e; font-weight:bold; background:rgba(244,63,94,0.1); padding:0.4rem 0.8rem; border-radius:8px; text-decoration:none; white-space:nowrap;">📍 Cómo llegar</a>
           </li>`;
 
     // Reseñas
@@ -787,8 +868,27 @@ function renderModalContent(place, imageUrl, statusHtml, ratingHTML) {
         </ul>`;
     }
 
+    let photosCarousel = `<img src="${imageUrl}" alt="${place.name}" class="modal-header-img" style="object-fit:cover; width:100%; height:200px; cursor:pointer;" onclick="openLightbox('${imageUrl}')">`;
+    if (place.photos && place.photos.length > 1) {
+        let extraPhotos = place.photos.slice(0, 8).map(p => {
+            let url = typeof p.getUrl === 'function' ? p.getUrl({ maxWidth: 800 }) : p;
+            return `<img src="${url}" alt="Foto de ${place.name}" onclick="openLightbox('${url}')" style="height:200px; width:auto; border-radius:12px; flex-shrink:0; object-fit:cover; border:1px solid rgba(255,255,255,0.1); cursor:pointer;">`;
+        }).join('');
+        
+        photosCarousel = `
+            <div style="position:relative; background:rgba(0,0,0,0.4);">
+                <button onclick="scrollCarousel(-300)" style="position:absolute; left:10px; top:50%; transform:translateY(-50%); z-index:10; background:rgba(0,0,0,0.6); border:none; color:white; width:40px; height:40px; border-radius:50%; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:1.5rem;">&#10094;</button>
+                <div id="modalCarousel" style="display:flex; overflow-x:auto; gap:1rem; padding:1rem 3.5rem; scroll-behavior:smooth; -ms-overflow-style:none; scrollbar-width:none;">
+                    ${extraPhotos}
+                </div>
+                <button onclick="scrollCarousel(300)" style="position:absolute; right:10px; top:50%; transform:translateY(-50%); z-index:10; background:rgba(0,0,0,0.6); border:none; color:white; width:40px; height:40px; border-radius:50%; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:1.5rem;">&#10095;</button>
+            </div>
+            <style>#modalCarousel::-webkit-scrollbar { display:none; }</style>
+        `;
+    }
+
     modalBody.innerHTML = `
-        <img src="${imageUrl}" alt="${place.name}" class="modal-header-img">
+        ${photosCarousel}
         <div class="modal-body-content">
             <div style="display:flex; justify-content:space-between; align-items:flex-start;">
                 <div>
