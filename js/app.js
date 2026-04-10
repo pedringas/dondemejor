@@ -29,10 +29,19 @@ const modalBody = document.getElementById('modalBody');
 const searchSuggestions = document.querySelectorAll('.suggestion-chip');
 
 // Inputs Search
-const customLocationInput = document.getElementById('customLocationInput');
 const btnUseLiveLocation = document.getElementById('btnUseLiveLocation');
 const btnClearLocation = document.getElementById('btnClearLocation');
 const btnClearSearch = document.getElementById('btnClearSearch');
+
+// Modales y Refresco de Mapa
+const btnOpenLocationModal = document.getElementById('btnOpenLocationModal');
+const customLocationDisplay = document.getElementById('customLocationDisplay');
+const locationModal = document.getElementById('locationModal');
+const closeLocationModal = document.getElementById('closeLocationModal');
+const locationForm = document.getElementById('locationForm');
+const locCityInput = document.getElementById('locCityInput');
+const locStreetInput = document.getElementById('locStreetInput');
+const btnRefreshMap = document.getElementById('btnRefreshMap');
 
 // Favoritos DOM
 const btnOpenFavorites = document.getElementById('btnOpenFavorites');
@@ -210,18 +219,48 @@ function initApp() {
     // Event Listeners
     searchForm.addEventListener('submit', handleSearch);
     
-    // Controles de input
-    if (customLocationInput) {
-        customLocationInput.addEventListener('input', () => {
-            btnClearLocation.style.display = customLocationInput.value ? 'block' : 'none';
+    // Event Listeners for new Location Modal
+    if (btnOpenLocationModal) btnOpenLocationModal.addEventListener('click', () => {
+        if(locationModal) locationModal.classList.remove('hidden');
+    });
+    if (closeLocationModal) closeLocationModal.addEventListener('click', () => {
+        if(locationModal) locationModal.classList.add('hidden');
+    });
+    if (locationModal) locationModal.addEventListener('click', (e) => {
+        if (e.target === locationModal) locationModal.classList.add('hidden');
+    });
+
+    if (locationForm) {
+        locationForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const city = locCityInput.value.trim();
+            const street = locStreetInput.value.trim();
+            const fullAddress = street ? `${street}, ${city}` : city;
+            
+            if (city) {
+                if (customLocationDisplay) {
+                    customLocationDisplay.textContent = fullAddress;
+                    customLocationDisplay.dataset.address = fullAddress;
+                    customLocationDisplay.style.display = 'inline';
+                }
+                if (btnOpenLocationModal) btnOpenLocationModal.textContent = "🌍 Modificar ciudad";
+                if (btnClearLocation) btnClearLocation.style.display = 'inline';
+                if (locationModal) locationModal.classList.add('hidden');
+                if (btnUseLiveLocation) btnUseLiveLocation.textContent = "📍 Usar ubicación actual";
+            }
         });
     }
+
     if (btnClearLocation) {
         btnClearLocation.addEventListener('click', () => {
-            customLocationInput.value = '';
+            if (customLocationDisplay) {
+                customLocationDisplay.textContent = '';
+                customLocationDisplay.dataset.address = '';
+                customLocationDisplay.style.display = 'none';
+            }
+            if (btnOpenLocationModal) btnOpenLocationModal.textContent = "🌍 Ingresar dirección manual";
             btnClearLocation.style.display = 'none';
             userLocation = null;
-            customLocationInput.focus();
         });
     }
     if (searchInput) {
@@ -357,6 +396,25 @@ window.initMapService = function() {
         }
         appMap.setCenter(userLocation);
     }
+    
+    // Listeners del mapa interactivo para el Refresh
+    if (appMap && btnRefreshMap) {
+        appMap.addListener('dragend', () => {
+            btnRefreshMap.classList.remove('hidden');
+        });
+        appMap.addListener('zoom_changed', () => {
+            btnRefreshMap.classList.remove('hidden');
+        });
+        
+        btnRefreshMap.addEventListener('click', () => {
+            userLocation = appMap.getCenter();
+            btnRefreshMap.classList.add('hidden');
+            if(searchInput.value.trim()) {
+                executeSearch(searchInput.value.trim()); // Refresca comercios con nueva coord
+            }
+        });
+    }
+    
     console.log("Servicio de Google Maps inicializado correctamente.");
 };
 
@@ -373,7 +431,7 @@ function handleSearch(e) {
     resultsGrid.innerHTML = '';
     loadingIndicator.classList.remove('hidden');
 
-    const locQuery = document.getElementById('locationInput') ? document.getElementById('locationInput').value.trim() : '';
+    const locQuery = (customLocationDisplay && customLocationDisplay.dataset.address) ? customLocationDisplay.dataset.address.trim() : '';
 
     if (locQuery && window.google) {
         const geocoder = new google.maps.Geocoder();
