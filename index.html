@@ -251,6 +251,24 @@
         <img id="lightboxImg" src="" alt="Ampliación" style="max-width:90%; max-height:90vh; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.5); object-fit:contain;">
     </div>
 
+    <!-- Firebase SDKs (v9 Compat) -->
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+    
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyBrKg8w6pB7ydLDL2NCurD8UumCZzsG_Yk",
+            authDomain: "donde-en.firebaseapp.com",
+            projectId: "donde-en",
+            storageBucket: "donde-en.firebasestorage.app",
+            messagingSenderId: "357434246920",
+            appId: "1:357434246920:web:1a739a418968236fdd8ebd",
+            measurementId: "G-L1HTR1XJEJ"
+        };
+        firebase.initializeApp(firebaseConfig);
+    </script>
+
     <!-- Script de configuración -->
     <script src="js/app.js"></script>
     <script async defer id="googleMapsScript"></script>

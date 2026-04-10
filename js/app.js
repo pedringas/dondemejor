@@ -86,16 +86,21 @@ const profilePhone = document.getElementById('profilePhone');
 const btnChangePassword = document.getElementById('btnChangePassword');
 const adminUsersTableBody = document.getElementById('adminUsersTableBody');
 
-// Auth State
-let currentUser = null;
-let currentAuthMode = 'login'; // 'login' or 'register'
-
 // View Controls
 const viewControls = document.getElementById('viewControls');
 const btnListView = document.getElementById('btnListView');
 const btnMapView = document.getElementById('btnMapView');
 const mapViewContainer = document.getElementById('mapViewContainer');
 const resultsMapDiv = document.getElementById('resultsMap');
+
+// Auth State
+let currentUser = null; // Guardará el objeto completo del usuario de Firebase
+let currentUserData = null; // Guardará el documento de Firestore del usuario
+let currentAuthMode = 'login'; 
+
+// Bases de Firebase
+const auth = firebase.auth();
+const db = firebase.firestore();
 
 // ==========================================
 // i18n
@@ -283,7 +288,6 @@ function initApp() {
                     userLocation = google?.maps?.LatLng ? new google.maps.LatLng(position.coords.latitude, position.coords.longitude) : { lat: position.coords.latitude, lng: position.coords.longitude };
                     if(appMap) appMap.setCenter(userLocation);
                     btnUseLiveLocation.textContent = "📍 Ubicación detectada";
-                    if(customLocationInput) customLocationInput.value = ''; 
                     if(btnClearLocation) btnClearLocation.style.display = 'none';
                 }, () => {
                     btnUseLiveLocation.textContent = "📍 Fallo al obtener ubicación";
@@ -1000,39 +1004,70 @@ function saveUsers(users) {
 }
 
 function initAuth() {
-    // Generar Admin automático si no existe
-    let users = getUsers();
-    if (!users.some(u => u.email === 'admin@dondeen.com')) {
-        users.push({
-            name: "Super Administrador",
-            email: "admin@dondeen.com",
-            phone: "",
-            password: "admin", // mock pass
-            role: "admin"
-        });
-        saveUsers(users);
-    }
+    // Escuchar cambios de estado en Firebase
+    auth.onAuthStateChanged(async (user) => {
+        if (user) {
+            currentUser = user;
+            // Cargar datos extra del perfil desde Firestore
+            const doc = await db.collection('users').doc(user.uid).get();
+            if (doc.exists) {
+                currentUserData = doc.data();
+            } else {
+                // Si no tiene perfil (ej. migrado recientemente), crear uno básico
+                currentUserData = { name: user.displayName || user.email.split('@')[0], email: user.email, role: 'user' };
+            }
+            
+            // Lógica de Migración Automática: Buscar favoritos viejos en PC
+            await migrateLocalFavorites(user.email, user.uid);
+            
+            updateUIForLogin();
+            loadFavorites();
+        } else {
+            currentUser = null;
+            currentUserData = null;
+            updateUIForLogin();
+            loadFavorites();
+        }
+    });
+}
 
-    const savedUser = localStorage.getItem('dondeen_currentUser');
-    if (savedUser) {
-        currentUser = savedUser;
+async function migrateLocalFavorites(email, uid) {
+    const oldKey = `dondeen_favorites_${email}`;
+    const oldFavs = localStorage.getItem(oldKey);
+    
+    if (oldFavs) {
+        try {
+            const favsArray = JSON.parse(oldFavs);
+            if (favsArray && favsArray.length > 0) {
+                console.log("Migrando favoritos locales a la nube para:", email);
+                const batch = db.batch();
+                favsArray.forEach(fav => {
+                    const docRef = db.collection('users').doc(uid).collection('favorites').doc(fav.place_id);
+                    batch.set(docRef, fav);
+                });
+                await batch.commit();
+                console.log("Migración completada exitosamente.");
+            }
+            // Borramos de localStorage para no volver a migrar
+            localStorage.removeItem(oldKey);
+        } catch (e) {
+            console.error("Error en migración:", e);
+        }
     }
-    updateUIForLogin();
 }
 
 function updateUIForLogin() {
     if (currentUser) {
-        const users = getUsers();
-        const userObj = users.find(u => u.email === currentUser);
+        const nameToShow = currentUserData ? currentUserData.name.split(' ')[0] : currentUser.email.split('@')[0];
         
-        userGreeting.textContent = i18n[userLang].hello_prefix + (userObj ? userObj.name.split(' ')[0] : currentUser.split('@')[0]);
+        userGreeting.textContent = i18n[userLang].hello_prefix + nameToShow;
         userGreeting.classList.remove('hidden');
         btnAuthLogin.classList.add('hidden');
         btnAuthLogout.classList.remove('hidden');
         btnUserProfile.classList.remove('hidden');
         btnOpenFavorites.classList.remove('hidden');
 
-        if (userObj && userObj.role === 'admin') {
+        if (currentUserData && currentUserData.role === 'admin') {
             btnAdminPanel.classList.remove('hidden');
         } else {
             btnAdminPanel.classList.add('hidden');
@@ -1078,54 +1113,52 @@ function switchAuthTab(mode) {
     }
 }
 
-function handleAuthSubmit(e) {
+async function handleAuthSubmit(e) {
     e.preventDefault();
     const email = authEmail.value.trim();
     const password = authPassword.value;
-    let users = getUsers();
 
     if (currentAuthMode === 'login') {
-        const user = users.find(u => u.email === email && u.password === password);
-        if (user) {
-            loginSuccess(email);
-        } else {
-            alert("Credenciales incorrectas (Email o Contraseña).");
+        try {
+            await auth.signInWithEmailAndPassword(email, password);
+            closeAuthModal();
+        } catch (error) {
+            alert("Error al iniciar sesión: " + error.message);
         }
     } else {
-        if (users.some(u => u.email === email)) {
-            alert("El correo electrónico ya se encuentra registrado.");
-            return;
+        try {
+            const userCredential = await auth.createUserWithEmailAndPassword(email, password);
+            const user = userCredential.user;
+            
+            // Guardar perfil en Firestore
+            const name = authName.value.trim();
+            const phone = authPhone.value.trim();
+            await db.collection('users').doc(user.uid).set({
+                name: name,
+                email: email,
+                phone: phone,
+                role: "user",
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+            
+            alert("Cuenta creada con éxito.");
+            closeAuthModal();
+        } catch (error) {
+            alert("Error al registrarse: " + error.message);
         }
-        users.push({
-            name: authName.value.trim(),
-            email: email,
-            phone: authPhone.value.trim(),
-            password: password,
-            role: "user"
-        });
-        saveUsers(users);
-        loginSuccess(email);
     }
 }
 
 function handleForgotPassword(e) {
     e.preventDefault();
-    const email = prompt("Por favor, ingrese el correo electrónico de su cuenta para restablecer la contraseña:");
-    if(!email || email.trim() === "") return;
+    const email = prompt("Por favor, ingrese su correo electrónico para recibir el enlace de recuperación:");
+    if (!email || email.trim() === "") return;
     
-    let users = getUsers();
-    let index = users.findIndex(u => u.email === email.trim());
-    
-    if(index !== -1) {
-        const newPass = prompt(`Usuario encontrado. Ingrese la nueva contraseña para ${email.trim()}:`);
-        if(newPass && newPass.trim() !== "") {
-            users[index].password = newPass.trim();
-            saveUsers(users);
-            alert("Su contraseña ha sido restablecida con éxito. Ya puede iniciar sesión.");
-        }
-    } else {
-        alert("No se encontró ninguna cuenta registrada con ese correo electrónico.");
-    }
+    auth.sendPasswordResetEmail(email.trim()).then(() => {
+        alert("Enlace enviado! Revisa tu bandeja de entrada (y la de SPAM) para cambiar tu contraseña.");
+    }).catch(error => {
+        alert("Error: " + error.message);
+    });
 }
 
 function loginSuccess(email) {
@@ -1137,11 +1170,9 @@ function loginSuccess(email) {
 }
 
 function handleLogout() {
-    currentUser = null;
-    localStorage.removeItem('dondeen_currentUser');
-    updateUIForLogin();
-    loadFavorites();
-    showHome();
+    auth.signOut().then(() => {
+        showHome();
+    });
 }
 
 // ==========================================
@@ -1161,46 +1192,43 @@ function showHome() {
     if(resultsSection) resultsSection.classList.remove('hidden');
 }
 
-function openUserDashboard() {
-    if(!currentUser) return;
-    const user = getUsers().find(u => u.email === currentUser);
-    if(user) {
-        profileName.value = user.name || "";
-        profileEmailText.textContent = user.email || "";
-        profilePhone.value = user.phone || "";
-    }
+async function openUserDashboard() {
+    if (!currentUser || !currentUserData) return;
+    
+    profileName.value = currentUserData.name || "";
+    profileEmailText.textContent = currentUser.email || "";
+    profilePhone.value = currentUserData.phone || "";
     
     hideAllSections();
     userDashboardSection.classList.remove('hidden');
 }
 
-function handleProfileUpdate(e) {
+async function handleProfileUpdate(e) {
     e.preventDefault();
-    if(!currentUser) return;
+    if (!currentUser) return;
     
-    let users = getUsers();
-    let index = users.findIndex(u => u.email === currentUser);
-    if(index !== -1) {
-        users[index].name = profileName.value.trim();
-        users[index].phone = profilePhone.value.trim();
-        saveUsers(users);
+    const newName = profileName.value.trim();
+    const newPhone = profilePhone.value.trim();
+    
+    try {
+        await db.collection('users').doc(currentUser.uid).update({
+            name: newName,
+            phone: newPhone
+        });
+        currentUserData.name = newName;
+        currentUserData.phone = newPhone;
         updateUIForLogin();
         alert("Perfil actualizado correctamente.");
+    } catch (error) {
+        alert("Error al actualizar perfil: " + error.message);
     }
 }
 
 function changeUserPassword() {
-    if(!currentUser) return;
-    const newPass = prompt("Ingrese su nueva contraseña:", "");
-    if(newPass && newPass.trim() !== "") {
-        let users = getUsers();
-        let index = users.findIndex(u => u.email === currentUser);
-        if(index !== -1) {
-            users[index].password = newPass.trim();
-            saveUsers(users);
-            alert("Contraseña modificada correctamente.");
-        }
-    }
+    if (!currentUser) return;
+    auth.sendPasswordResetEmail(currentUser.email).then(() => {
+        alert("Se ha enviado un correo a tu cuenta para que cambies la contraseña de forma segura.");
+    });
 }
 
 function openAdminDashboard() {
@@ -1209,50 +1237,44 @@ function openAdminDashboard() {
     renderAdminTable();
 }
 
-function renderAdminTable() {
-    const users = getUsers();
-    adminUsersTableBody.innerHTML = '';
+async function renderAdminTable() {
+    adminUsersTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center">Cargando usuarios de la nube...</td></tr>';
     
-    users.forEach((user) => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-            <td>${user.name || '-'}</td>
-            <td>${user.email}</td>
-            <td>${user.phone || '-'}</td>
-            <td style="font-family: monospace;">${user.password}</td>
-            <td><span class="status-badge ${user.role === 'admin' ? 'open' : 'closed'}" style="padding:0.2rem 0.5rem">${user.role}</span></td>
-            <td>
-                ${(user.email !== currentUser && user.email !== 'admin@dondeen.com') 
-                    ? `<button class="action-btn" onclick="adminModifyPassword('${user.email}')" aria-label="Cambiar Clave" style="margin-right: 0.5rem;" title="Modificar Contraseña">🔑</button>` 
-                      + `<button class="action-btn delete" onclick="deleteUser('${user.email}')" aria-label="Eliminar" title="Eliminar Usuario">🗑</button>` 
-                    : '-'}
-            </td>
-        `;
-        adminUsersTableBody.appendChild(row);
-    });
+    try {
+        const snapshot = await db.collection('users').get();
+        adminUsersTableBody.innerHTML = '';
+        
+        snapshot.forEach((doc) => {
+            const user = doc.data();
+            const id = doc.id;
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${user.name || '-'}</td>
+                <td>${user.email}</td>
+                <td>${user.phone || '-'}</td>
+                <td style="font-family: monospace; color: var(--text-muted); font-size:0.8rem;">[Protegido]</td>
+                <td><span class="status-badge ${user.role === 'admin' ? 'open' : 'closed'}" style="padding:0.2rem 0.5rem">${user.role}</span></td>
+                <td>
+                    ${(user.email !== currentUser.email) 
+                        ? `<button class="action-btn delete" onclick="deleteCloudUser('${id}', '${user.email}')" aria-label="Eliminar" title="Eliminar Usuario">🗑</button>` 
+                        : '-'}
+                </td>
+            `;
+            adminUsersTableBody.appendChild(row);
+        });
+    } catch (error) {
+        console.error("Error al cargar admin table:", error);
+    }
 }
 
-window.deleteUser = function(email) {
-    if(confirm(`¿Estás seguro de que deseas eliminar al usuario ${email}?`)) {
-        let users = getUsers();
-        users = users.filter(u => u.email !== email);
-        saveUsers(users);
-        
-        localStorage.removeItem(`${FAVORITES_KEY}_${email}`);
-        renderAdminTable();
-    }
-};
-
-window.adminModifyPassword = function(email) {
-    const newPass = prompt(`Ingrese la nueva contraseña para el usuario ${email}:`, "");
-    if(newPass && newPass.trim() !== "") {
-        let users = getUsers();
-        let index = users.findIndex(u => u.email === email);
-        if(index !== -1) {
-            users[index].password = newPass.trim();
-            saveUsers(users);
+window.deleteCloudUser = async function(uid, email) {
+    if (confirm(`¿Estás seguro de que deseas eliminar permanentemente a ${email}? Tendrás que borrarlo manualmente también de Firebase Auth para que no pueda entrar.`)) {
+        try {
+            await db.collection('users').doc(uid).delete();
             renderAdminTable();
-            alert("Contraseña de usuario modificada correctamente.");
+            alert("Usuario eliminado de Firestore.");
+        } catch (error) {
+            alert("Error: " + error.message);
         }
     }
 };
@@ -1260,102 +1282,106 @@ window.adminModifyPassword = function(email) {
 // ==========================================
 // Lógica de Favoritos Configuradas con Usuario
 // ==========================================
-function getFavoritesKey() {
-    return currentUser ? `${FAVORITES_KEY}_${currentUser}` : null;
-}
-
-function getFavorites() {
-    const key = getFavoritesKey();
-    if(!key) return [];
-    const favs = localStorage.getItem(key);
-    return favs ? JSON.parse(favs) : [];
-}
-
 function isFavorite(placeId) {
     if (!placeId) return false;
-    const favs = getFavorites();
-    return favs.some(f => f.place_id === placeId);
+    return window.currentFavsData ? window.currentFavsData.some(f => f.place_id === placeId) : false;
 }
 
-function toggleFavorite(place, photoUrl = '', statusHtml = '', ratingHTML = '') {
+async function toggleFavorite(place, photoUrl = '', statusHtml = '', ratingHTML = '') {
     if (!currentUser) {
         openAuthModal();
         return;
     }
 
     if (!place.place_id) return;
-    let favs = getFavorites();
-    const key = getFavoritesKey();
+    const uid = currentUser.uid;
+    const docRef = db.collection('users').doc(uid).collection('favorites').doc(place.place_id);
 
     if (isFavorite(place.place_id)) {
-        favs = favs.filter(f => f.place_id !== place.place_id);
+        await docRef.delete();
     } else {
-        favs.unshift({
+        await docRef.set({
             place_id: place.place_id,
             name: place.name,
-            formatted_address: place.formatted_address || place.vicinity,
-            rating: place.rating,
-            user_ratings_total: place.user_ratings_total,
-            photoUrl: photoUrl || place.photoUrl,
-            statusHtml: statusHtml || place.statusHtml,
-            ratingHTML: ratingHTML || place.ratingHTML
+            formatted_address: place.formatted_address || place.vicinity || 'Córdoba, Argentina',
+            rating: place.rating || 0,
+            user_ratings_total: place.user_ratings_total || 0,
+            photoUrl: photoUrl || place.photoUrl || '',
+            statusHtml: statusHtml || place.statusHtml || '',
+            ratingHTML: ratingHTML || place.ratingHTML || '',
+            distanceKm: place.distanceKm || 9999,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
         });
     }
-    localStorage.setItem(key, JSON.stringify(favs));
     loadFavorites(); 
 }
 
-function loadFavorites() {
-    const favs = getFavorites();
+async function loadFavorites() {
+    if (!currentUser) {
+        window.currentFavsData = [];
+        favoritesModalGrid.innerHTML = '';
+        emptyFavoritesState.classList.remove('hidden');
+        updateUIFavoritesIcons();
+        return;
+    }
     
-    // Forzar actualización de ui en la grid principal por si desloguean y hay estrellas prendidas
+    try {
+        const snapshot = await db.collection('users').doc(currentUser.uid).collection('favorites').orderBy('createdAt', 'desc').get();
+        const favs = [];
+        snapshot.forEach(doc => favs.push(doc.data()));
+        window.currentFavsData = favs;
+        
+        updateUIFavoritesIcons();
+        favoritesModalGrid.innerHTML = '';
+
+        if (favs.length === 0) {
+            emptyFavoritesState.classList.remove('hidden');
+            return;
+        }
+        
+        emptyFavoritesState.classList.add('hidden');
+        
+        favs.forEach((place) => {
+            const card = document.createElement('div');
+            card.className = 'place-card';
+            
+            card.innerHTML = `
+                <img src="${place.photoUrl}" alt="${place.name}" class="card-image" loading="lazy">
+                <button class="favorite-btn is-favorite" data-id="${place.place_id}">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
+                </button>
+                <div class="card-content" style="cursor: pointer;">
+                    <div class="card-header">
+                        <h3 class="place-name" style="font-size: 1.1rem; line-height: 1.1;">${place.name}</h3>
+                    </div>
+                    ${place.distanceKm != null && place.distanceKm < 9999 ? `<p style="font-size:0.75rem; color:var(--text-muted); margin-bottom:0.2rem">A ${place.distanceKm.toFixed(1)} km</p>` : ''}
+                    <p class="place-address" style="font-size: 0.85rem; margin-bottom: 0.5rem;">${place.formatted_address || 'Córdoba, Argentina'}</p>
+                    <div class="card-footer">
+                        ${place.statusHtml}
+                    </div>
+                </div>
+            `;
+
+            card.querySelector('.card-content').addEventListener('click', () => openPlaceDetails(place, place.photoUrl, place.statusHtml, place.ratingHTML));
+            card.querySelector('.card-image').addEventListener('click', () => openPlaceDetails(place, place.photoUrl, place.statusHtml, place.ratingHTML));
+            
+            card.querySelector('.favorite-btn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleFavorite(place);
+            });
+
+            favoritesModalGrid.appendChild(card);
+        });
+    } catch (e) {
+        console.error("Error cargando favoritos:", e);
+    }
+}
+
+function updateUIFavoritesIcons() {
     document.querySelectorAll('.results-grid .favorite-btn').forEach(btn => {
         const id = btn.dataset.id;
         if(isFavorite(id)) btn.classList.add('is-favorite');
         else btn.classList.remove('is-favorite');
-    });
-
-    favoritesModalGrid.innerHTML = '';
-
-    if (favs.length === 0 || !currentUser) {
-        emptyFavoritesState.classList.remove('hidden');
-        return;
-    }
-    
-    emptyFavoritesState.classList.add('hidden');
-    
-    favs.forEach((place) => {
-        const card = document.createElement('div');
-        card.className = 'place-card';
-        
-        card.innerHTML = `
-            <img src="${place.photoUrl}" alt="${place.name}" class="card-image" loading="lazy">
-            <button class="favorite-btn is-favorite" data-id="${place.place_id}">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
-            </button>
-            <div class="card-content" style="cursor: pointer;">
-                <div class="card-header">
-                    <h3 class="place-name" style="font-size: 1.1rem; line-height: 1.1;">${place.name}</h3>
-                </div>
-                <p class="place-address" style="font-size: 0.85rem; margin-bottom: 0.5rem;">${place.formatted_address || 'Córdoba, Argentina'}</p>
-                <div class="card-footer">
-                    ${place.statusHtml}
-                </div>
-            </div>
-        `;
-
-        card.querySelector('.card-content').addEventListener('click', () => openPlaceDetails(place, place.photoUrl, place.statusHtml, place.ratingHTML));
-        card.querySelector('.card-image').addEventListener('click', () => openPlaceDetails(place, place.photoUrl, place.statusHtml, place.ratingHTML));
-        
-        card.querySelector('.favorite-btn').addEventListener('click', (e) => {
-            e.stopPropagation();
-            toggleFavorite(place);
-            // Si el lugar está en la grilla principal, quitarle la clase "is-favorite"
-            const mainCardBtn = document.querySelector(`.results-grid .favorite-btn[data-id="${place.place_id}"]`);
-            if(mainCardBtn) mainCardBtn.classList.remove('is-favorite');
-        });
-
-        favoritesModalGrid.appendChild(card);
     });
 }
 
