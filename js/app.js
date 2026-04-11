@@ -1882,3 +1882,29 @@ document.addEventListener('DOMContentLoaded', () => {
     initApp();
     loadInfluencers();
 });
+
+// ==========================================
+// FUNCIÓN DE EMERGENCIA - HABILITAR ADMIN
+// ==========================================
+// Instrucciones:
+// 1. Regístrate o inicia sesión con tu cuenta (ej. admin@dondeen.com)
+// 2. Abre la consola del navegador (F12)
+// 3. Escribe: hacermeAdmin() y pulsa Enter.
+// 4. Recarga la página.
+window.hacermeAdmin = async function() {
+    if (!currentUser) {
+        console.error("Debes iniciar sesión primero.");
+        alert("Primero inicia sesión con la cuenta que quieres convertir en Admin.");
+        return;
+    }
+    try {
+        await db.collection('users').doc(currentUser.uid).update({
+            role: 'admin'
+        });
+        console.log("¡Éxito! Ahora eres administrador. Recarga la página.");
+        alert("¡Permisos de Admin concedidos! Recarga la página para ver el panel.");
+    } catch (e) {
+        console.error("Error al promover usuario:", e);
+        alert("Error al intentar dar permisos: " + e.message);
+    }
+};
