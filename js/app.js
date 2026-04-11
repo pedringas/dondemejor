@@ -506,6 +506,8 @@ function handleSearch(e) {
 
 function executeSearch(query) {
     const searchQuery = query;
+    let allResults = [];
+    let pagesFetched = 0;
 
     if (placesService) {
         const request = {
@@ -518,57 +520,81 @@ function executeSearch(query) {
             request.radius = 10000;
         }
 
-        placesService.textSearch(request, (results, status) => {
-            loadingIndicator.classList.add('hidden');
+        const handleResults = (results, status, pagination) => {
             if (status === google.maps.places.PlacesServiceStatus.OK && results) {
-                if(userLocation) {
-                    let uLat = typeof userLocation.lat === 'function' ? userLocation.lat() : userLocation.lat;
-                    let uLng = typeof userLocation.lng === 'function' ? userLocation.lng() : userLocation.lng;
-                    results.forEach(p => {
-                        if(p.geometry && p.geometry.location) {
-                            let pLat = typeof p.geometry.location.lat === 'function' ? p.geometry.location.lat() : p.geometry.location.lat;
-                            let pLng = typeof p.geometry.location.lng === 'function' ? p.geometry.location.lng() : p.geometry.location.lng;
-                            p.distanceKm = getDistance(uLat, uLng, pLat, pLng);
-                        } else {
-                            p.distanceKm = 9999;
-                        }
-                    });
-                    
-                    // Ordenamos: Primero los que esten a menos de 0.6km, y si ambos lo estan, por rating.
-                    results.sort((a,b) => {
-                        const aClose = a.distanceKm < 0.6;
-                        const bClose = b.distanceKm < 0.6;
-                        if(aClose && !bClose) return -1;
-                        if(!aClose && bClose) return 1;
-                        // si ambos estan cerca o lejos, gana el rating
-                        return (b.rating || 0) - (a.rating || 0);
-                    });
-                } else {
-                    results.sort((a,b) => (b.rating || 0) - (a.rating || 0));
+                allResults = allResults.concat(results);
+                pagesFetched++;
+
+                // Si hay más páginas y no llegamos al límite de 3 (60 resultados)
+                if (pagination && pagination.hasNextPage && pagesFetched < 3) {
+                    // Google requiere un pequeño delay para la siguiente página
+                    setTimeout(() => pagination.nextPage(), 2000);
+                    return;
                 }
-                
-                currentResults = results;
-                viewControls.classList.remove('hidden');
-                
-                if(appMap && results.length > 0) {
-                    appMap.setCenter(userLocation || results[0].geometry.location);
-                }
-                
-                renderCurrentView();
+
+                loadingIndicator.classList.add('hidden');
+                processAndRenderResults(allResults);
             } else {
-                renderError(i18n[userLang].error_api + `<br><b>${status}</b>`);
+                loadingIndicator.classList.add('hidden');
+                if (allResults.length > 0) {
+                    processAndRenderResults(allResults);
+                } else {
+                    renderError(i18n[userLang].error_api + `<br><b>${status}</b>`);
+                }
             }
-        });
+        };
+
+        placesService.textSearch(request, handleResults);
     } else {
+        // Mock data logic remains similar but simplified
         setTimeout(() => {
             loadingIndicator.classList.add('hidden');
             let mockData = getMockData(query);
-            mockData.sort((a,b) => (b.rating || 0) - (a.rating || 0));
-            currentResults = mockData;
-            viewControls.classList.remove('hidden');
-            renderCurrentView();
+            processAndRenderResults(mockData);
         }, 1500);
     }
+}
+
+function processAndRenderResults(results) {
+    if(userLocation) {
+        let uLat = typeof userLocation.lat === 'function' ? userLocation.lat() : userLocation.lat;
+        let uLng = typeof userLocation.lng === 'function' ? userLocation.lng() : userLocation.lng;
+        results.forEach(p => {
+            if(p.geometry && p.geometry.location) {
+                let pLat = typeof p.geometry.location.lat === 'function' ? p.geometry.location.lat() : p.geometry.location.lat;
+                let pLng = typeof p.geometry.location.lng === 'function' ? p.geometry.location.lng() : p.geometry.location.lng;
+                p.distanceKm = getDistance(uLat, uLng, pLat, pLng);
+            } else {
+                p.distanceKm = 9999;
+            }
+            // Algoritmo de ranking ponderado: Rating + (log10(reviews) * factor)
+            p.weightedScore = (p.rating || 0) + (Math.log10((p.user_ratings_total || 0) + 1) * 0.4);
+        });
+        
+        // Ordenamos: 
+        // 1. Cercanía (<600m) tienen prioridad visual, pero dentro de su grupo se ordenan por weightedScore.
+        results.sort((a,b) => {
+            const aClose = a.distanceKm < 0.6;
+            const bClose = b.distanceKm < 0.6;
+            if(aClose && !bClose) return -1;
+            if(!aClose && bClose) return 1;
+            return b.weightedScore - a.weightedScore;
+        });
+    } else {
+        results.forEach(p => {
+            p.weightedScore = (p.rating || 0) + (Math.log10((p.user_ratings_total || 0) + 1) * 0.4);
+        });
+        results.sort((a,b) => b.weightedScore - a.weightedScore);
+    }
+    
+    currentResults = results;
+    viewControls.classList.remove('hidden');
+    
+    if(appMap && results.length > 0) {
+        appMap.setCenter(userLocation || results[0].geometry.location);
+    }
+    
+    renderCurrentView();
 }
 
 // ==========================================
@@ -760,21 +786,26 @@ function renderMarkers() {
         // Extraer formato corto de nombre
         const shortName = place.name.split(' ').slice(0,2).join(' ') + (place.name.split(' ').length > 2 ? '...' : '');
 
+        const rating = place.rating || 0;
+        let markerColor = "#94a3b8"; // Default gris
+        if (rating >= 4.4) markerColor = "#10b981"; // Verde
+        else if (rating >= 4.0) markerColor = "#f59e0b"; // Naranja
+        else if (rating > 0) markerColor = "#ef4444"; // Rojo
+
         const marker = new google.maps.Marker({
             map: appMap,
             position: place.geometry.location,
             title: place.name,
             label: {
-                text: shortName,
+                text: rating > 0 ? rating.toFixed(1) : "?",
                 color: "#ffffff",
-                fontSize: "15px",
-                fontWeight: "bold",
-                className: "map-marker-label"
+                fontSize: "14px",
+                fontWeight: "bold"
             },
             icon: {
                 path: google.maps.SymbolPath.CIRCLE,
-                scale: 8,
-                fillColor: "#f43f5e",
+                scale: 14,
+                fillColor: markerColor,
                 fillOpacity: 1,
                 strokeWeight: 2,
                 strokeColor: "#ffffff"
@@ -834,11 +865,30 @@ function renderModalContent(place, imageUrl, statusHtml, ratingHTML) {
             <a href="${place.website}" target="_blank">Sitio Web Oficial</a>
            </li>` : '';
 
+    // Direcciones y Mapa Estático
+    let mapSnippetHtml = '';
     const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(place.formatted_address || place.name)}`;
+    
+    if (place.geometry && place.geometry.location) {
+        const lat = typeof place.geometry.location.lat === 'function' ? place.geometry.location.lat() : place.geometry.location.lat;
+        const lng = typeof place.geometry.location.lng === 'function' ? place.geometry.location.lng() : place.geometry.location.lng;
+        
+        const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=15&size=600x300&markers=color:red%7C${lat},${lng}&key=${GOOGLE_MAPS_API_KEY}`;
+        
+        mapSnippetHtml = `
+            <div class="map-snippet-container" onclick="window.open('${directionsUrl}', '_blank')">
+                <img src="${staticMapUrl}" class="map-snippet-img" alt="Recorte de mapa de ${place.name}">
+                <div class="map-snippet-overlay">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+                    <span>Ver indicaciones en Google Maps</span>
+                </div>
+            </div>
+        `;
+    }
+
     const mapHtml = `<li>
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
             <span style="flex-grow:1;">${place.formatted_address || 'Córdoba, Argentina'}</span>
-            <a href="${directionsUrl}" target="_blank" rel="noopener noreferrer" style="margin-left:auto; display:flex; align-items:center; gap:0.25rem; font-size:0.9rem; color:#f43f5e; font-weight:bold; background:rgba(244,63,94,0.1); padding:0.4rem 0.8rem; border-radius:8px; text-decoration:none; white-space:nowrap;">📍 Cómo llegar</a>
           </li>`;
 
     // Reseñas
@@ -867,7 +917,7 @@ function renderModalContent(place, imageUrl, statusHtml, ratingHTML) {
     // Horarios
     let scheduleHtml = '';
     if (place.opening_hours && place.opening_hours.weekday_text) {
-        scheduleHtml = `<ul style="list-style:none; font-size:0.9rem; color:var(--text-muted);">
+        scheduleHtml = `<ul style="list-style:none; font-size:0.9rem; color:var(--text-muted); margin-bottom: 1rem;">
             ${place.opening_hours.weekday_text.map(day => `<li style="margin-bottom:0.3rem;">${day}</li>`).join('')}
         </ul>`;
     }
@@ -919,6 +969,8 @@ function renderModalContent(place, imageUrl, statusHtml, ratingHTML) {
                         <h3 style="margin-top:2rem;">Horarios</h3>
                         ${scheduleHtml}
                     ` : ''}
+
+                    ${mapSnippetHtml}
                 </div>
 
                 <!-- Reviews Section -->
@@ -1067,11 +1119,24 @@ function updateUIForLogin() {
         btnUserProfile.classList.remove('hidden');
         btnOpenFavorites.classList.remove('hidden');
 
+        // Lógica de Admin
         if (currentUserData && currentUserData.role === 'admin') {
             btnAdminPanel.classList.remove('hidden');
         } else {
             btnAdminPanel.classList.add('hidden');
         }
+
+        // Lógica de Influencer
+        const influencerPanel = document.getElementById('influencerPanel');
+        if (currentUserData && currentUserData.is_influencer && currentUserData.is_approved) {
+            if(influencerPanel) {
+                influencerPanel.classList.remove('hidden');
+                loadInfluencerDashboardData();
+            }
+        } else if(influencerPanel) {
+            influencerPanel.classList.add('hidden');
+        }
+
     } else {
         userGreeting.classList.add('hidden');
         btnAuthLogin.classList.remove('hidden');
@@ -1081,6 +1146,96 @@ function updateUIForLogin() {
         btnAdminPanel.classList.add('hidden');
     }
 }
+
+async function loadInfluencerDashboardData() {
+    if (!currentUser) return;
+    document.getElementById('influencerInsta').value = currentUserData.instagramHandle || '';
+    document.getElementById('influencerPhoto').value = currentUserData.photoUrl || '';
+    loadMyRecommendations();
+}
+
+async function loadMyRecommendations() {
+    const list = document.getElementById('myRecommendationsList');
+    if (!list) return;
+    list.innerHTML = 'Cargando tus recomendaciones...';
+    
+    try {
+        const snapshot = await db.collection('influencer_recs')
+            .where('influencerId', '==', currentUser.uid)
+            .get();
+        
+        if (snapshot.empty) {
+            list.innerHTML = '<p style="color:var(--text-muted);">Aún no has cargado recomendaciones.</p>';
+            return;
+        }
+
+        let html = '<h5 style="margin-bottom:1rem;">Tus recomendaciones actuales:</h5>';
+        snapshot.forEach(doc => {
+            const r = doc.data();
+            html += `
+                <div class="res-card" style="display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        <strong style="color:var(--primary);">${r.placeName}</strong>
+                        <p style="font-size:0.8rem; margin:0;">${r.comment.substring(0, 50)}...</p>
+                    </div>
+                    <button class="action-btn delete" onclick="deleteRecommendation('${doc.id}')">🗑</button>
+                </div>
+            `;
+        });
+        list.innerHTML = html;
+    } catch (e) {
+        list.innerHTML = 'Error al cargar.';
+    }
+}
+
+window.deleteRecommendation = async function(id) {
+    if (confirm("¿Borrar esta recomendación?")) {
+        await db.collection('influencer_recs').doc(id).delete();
+        loadMyRecommendations();
+    }
+};
+
+// Event Listeners para Influencers
+document.getElementById('influencerMetaForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const insta = document.getElementById('influencerInsta').value.trim();
+    const photo = document.getElementById('influencerPhoto').value.trim();
+    
+    try {
+        await db.collection('users').doc(currentUser.uid).update({
+            instagramHandle: insta,
+            photoUrl: photo
+        });
+        currentUserData.instagramHandle = insta;
+        currentUserData.photoUrl = photo;
+        alert("Información actualizada.");
+        loadInfluencers(); // Refrescar carrusel inicio
+    } catch (e) {
+        alert("Error: " + e.message);
+    }
+});
+
+document.getElementById('addRecommendationForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const placeName = document.getElementById('recPlaceName').value.trim();
+    const comment = document.getElementById('recComment').value.trim();
+    const videoUrl = document.getElementById('recVideoUrl').value.trim();
+    
+    try {
+        await db.collection('influencer_recs').add({
+            influencerId: currentUser.uid,
+            placeName,
+            comment,
+            videoUrl,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        e.target.reset();
+        alert("¡Recomendación subida con éxito!");
+        loadMyRecommendations();
+    } catch (e) {
+        alert("Error: " + e.message);
+    }
+});
 
 function openAuthModal(mode = 'login') {
     authModal.classList.remove('hidden');
@@ -1238,7 +1393,7 @@ function openAdminDashboard() {
 }
 
 async function renderAdminTable() {
-    adminUsersTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center">Cargando usuarios de la nube...</td></tr>';
+    adminUsersTableBody.innerHTML = '<tr><td colspan="7" style="text-align:center">Cargando usuarios de la nube...</td></tr>';
     
     try {
         const snapshot = await db.collection('users').get();
@@ -1248,12 +1403,22 @@ async function renderAdminTable() {
             const user = doc.data();
             const id = doc.id;
             const row = document.createElement('tr');
+            
+            const influencerStatus = user.is_influencer ? (user.is_approved ? '✅ Aprobado' : '⏳ Pendiente') : '❌ No';
+
             row.innerHTML = `
                 <td>${user.name || '-'}</td>
                 <td>${user.email}</td>
                 <td>${user.phone || '-'}</td>
-                <td style="font-family: monospace; color: var(--text-muted); font-size:0.8rem;">[Protegido]</td>
                 <td><span class="status-badge ${user.role === 'admin' ? 'open' : 'closed'}" style="padding:0.2rem 0.5rem">${user.role}</span></td>
+                <td>
+                    <div style="display:flex; flex-direction:column; gap:0.2rem; align-items:center;">
+                        <span style="font-size:0.8rem">${influencerStatus}</span>
+                        <button class="action-btn" onclick="toggleInfluencerStatus('${id}', ${user.is_influencer || false}, ${user.is_approved || false})" style="font-size:0.7rem; padding:2px 5px;">
+                            ${user.is_influencer ? 'Revocar' : 'Hacer Influencer'}
+                        </button>
+                    </div>
+                </td>
                 <td>
                     ${(user.email !== currentUser.email) 
                         ? `<button class="action-btn delete" onclick="deleteCloudUser('${id}', '${user.email}')" aria-label="Eliminar" title="Eliminar Usuario">🗑</button>` 
@@ -1266,6 +1431,20 @@ async function renderAdminTable() {
         console.error("Error al cargar admin table:", error);
     }
 }
+
+window.toggleInfluencerStatus = async function(uid, currentlyIsInfluencer, currentlyIsApproved) {
+    try {
+        const newStatus = !currentlyIsInfluencer;
+        await db.collection('users').doc(uid).update({
+            is_influencer: newStatus,
+            is_approved: newStatus // Por simplificacion, al hacerlo influencer desde admin queda aprobado
+        });
+        renderAdminTable();
+        alert(newStatus ? "Usuario ahora es Influencer." : "Estatus de Influencer revocado.");
+    } catch (e) {
+        alert("Error: " + e.message);
+    }
+};
 
 window.deleteCloudUser = async function(uid, email) {
     if (confirm(`¿Estás seguro de que deseas eliminar permanentemente a ${email}? Tendrás que borrarlo manualmente también de Firebase Auth para que no pueda entrar.`)) {
@@ -1435,5 +1614,142 @@ function getMockData(query) {
     ];
 }
 
+// ==========================================
+// Módulo de Influencers & Recomendados
+// ==========================================
+
+async function loadInfluencers() {
+    const influencerCarousel = document.getElementById('influencerCarousel');
+    if (!influencerCarousel) return;
+
+    try {
+        const snapshot = await db.collection('users')
+            .where('role', '==', 'user')
+            .where('is_influencer', '==', true)
+            .where('is_approved', '==', true)
+            .get();
+
+        if (snapshot.empty) {
+            // Datos de prueba si no hay reales
+            renderMockInfluencers();
+            return;
+        }
+
+        let html = '';
+        snapshot.forEach(doc => {
+            const data = doc.data();
+            html += `
+                <div class="influencer-card" onclick="openInfluencerProfile('${doc.id}', '${data.name}')">
+                    <img src="${data.photoUrl || 'https://via.placeholder.com/80'}" class="influencer-avatar" alt="${data.name}">
+                    <div class="influencer-name">${data.name}</div>
+                    <div class="influencer-handle">${data.instagramHandle || '@influencer'}</div>
+                </div>
+            `;
+        });
+        influencerCarousel.innerHTML = html;
+    } catch (error) {
+        console.error("Error cargando influencers:", error);
+        renderMockInfluencers();
+    }
+}
+
+function renderMockInfluencers() {
+    const influencerCarousel = document.getElementById('influencerCarousel');
+    const mocks = [
+        { id: 'm1', name: 'Gastro Fan', handle: '@gastrocordoba', img: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=200' },
+        { id: 'm2', name: 'Foodie CBA', handle: '@foodie.cba', img: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200' },
+        { id: 'm3', name: 'Nico Dulce', handle: '@nico.bakery', img: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=200' }
+    ];
+    
+    influencerCarousel.innerHTML = mocks.map(m => `
+        <div class="influencer-card" onclick="openInfluencerProfile('${m.id}', '${m.name}')">
+            <img src="${m.img}" class="influencer-avatar" alt="${m.name}">
+            <div class="influencer-name">${m.name}</div>
+            <div class="influencer-handle">${m.handle}</div>
+        </div>
+    `).join('');
+}
+
+window.openInfluencerProfile = async function(influencerId, name) {
+    loadingIndicator.classList.remove('hidden');
+    try {
+        const snapshot = await db.collection('influencer_recs')
+            .where('influencerId', '==', influencerId)
+            .get();
+
+        if (snapshot.empty) {
+            alert("Este influencer aún no tiene recomendaciones públicas.");
+            loadingIndicator.classList.add('hidden');
+            return;
+        }
+
+        let recsHtml = `
+            <div style="padding: 1rem; text-align: center;">
+                <h2 style="font-size: 2rem; margin-bottom: 0.5rem;">🔥 Recomendados por ${name}</h2>
+                <p style="color: var(--text-muted); margin-bottom: 2rem;">Experiencias reales en video</p>
+                <div id="influencerRecsList">
+        `;
+
+        snapshot.forEach(doc => {
+            const r = doc.data();
+            const embedUrl = getEmbedUrl(r.videoUrl);
+            recsHtml += `
+                <div class="res-card">
+                    <h3 style="color: var(--primary); margin-bottom: 0.5rem;">${r.placeName}</h3>
+                    <p style="margin-bottom: 1rem; font-style: italic;">"${r.comment}"</p>
+                    <div class="video-container">
+                        ${embedUrl ? `<iframe width="100%" height="100%" src="${embedUrl}" frameborder="0" allowfullscreen></iframe>` : `<p style="padding: 2rem;">Video no disponible para previsualización directa.</p>`}
+                    </div>
+                    <a href="${r.videoUrl}" target="_blank" class="primary-btn outline-btn" style="display:inline-block; margin-top: 1rem; width: 100%;">Ver en Redes Sociales</a>
+                </div>
+            `;
+        });
+
+        recsHtml += `</div></div>`;
+
+        modalBody.innerHTML = recsHtml;
+        placeModal.classList.remove('hidden');
+        loadingIndicator.classList.add('hidden');
+    } catch (e) {
+        console.error(e);
+        alert("Error al cargar recomendaciones.");
+        loadingIndicator.classList.add('hidden');
+    }
+};
+
+function getEmbedUrl(url) {
+    if (!url) return null;
+    
+    // YouTube
+    if (url.includes('youtube.com/watch')) {
+        const v = new URL(url).searchParams.get('v');
+        return `https://www.youtube.com/embed/${v}`;
+    }
+    if (url.includes('youtu.be/')) {
+        const v = url.split('youtu.be/')[1];
+        return `https://www.youtube.com/embed/${v}`;
+    }
+
+    // Instagram (Simple /embed suffix)
+    if (url.includes('instagram.com/')) {
+        // Asegurarse que termine en / e inyectar embed
+        let clean = url.split('?')[0];
+        if (!clean.endsWith('/')) clean += '/';
+        return `${clean}embed`;
+    }
+
+    // TikTok (Basic embed search)
+    if (url.includes('tiktok.com/')) {
+        // TikTok requiere scripts mas complejos para el embed dinámico, 
+        // pero podemos probar con la URL de video si es directa.
+        return null; // TikTok es difícil sin su SDK de embed
+    }
+
+    return null;
+}
+
 // Iniciar aplicación
-document.addEventListener('DOMContentLoaded', initApp);
+document.addEventListener('DOMContentLoaded', () => {
+    initApp();
+    loadInfluencers();
+});

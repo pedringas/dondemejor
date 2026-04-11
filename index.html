@@ -67,6 +67,13 @@
             </div>
         </section>
 
+        <section class="influencer-section" id="influencerSection">
+            <h2 class="section-title">✨ Recomendados by Influencers</h2>
+            <div class="influencer-carousel" id="influencerCarousel">
+                <!-- Se cargará dinámicamente desde Firestore -->
+            </div>
+        </section>
+
         <section class="results-section">
             <div id="viewControls" class="view-controls hidden">
                 <button class="view-btn active" id="btnListView">Lista</button>
@@ -100,7 +107,8 @@
                 <h2>Mi Perfil</h2>
                 <button class="primary-btn outline-btn btn-back-home">Volver al Buscador</button>
             </div>
-            <div class="dashboard-card">
+            
+            <div class="dashboard-card" style="margin-bottom: 2rem;">
                 <form id="userProfileForm" class="dashboard-form">
                     <div class="form-group">
                         <label>Nombre</label>
@@ -119,6 +127,43 @@
                         <button type="submit" class="primary-btn" style="flex:1;">Guardar Cambios</button>
                     </div>
                 </form>
+            </div>
+
+            <!-- Panel de Influencer (Solo visible para influencers aprobados) -->
+            <div id="influencerPanel" class="dashboard-card hidden" style="border: 2px solid var(--primary);">
+                <h3 style="margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem;">🌟 Panel de Influencer</h3>
+                <form id="influencerMetaForm" style="margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 1px solid rgba(255,255,255,0.1);">
+                    <div class="form-group">
+                        <label>Tu Instagram (Link o @)</label>
+                        <input type="text" id="influencerInsta" class="auth-input" placeholder="@tuusuario">
+                    </div>
+                    <div class="form-group">
+                        <label>URL de Foto de Perfil</label>
+                        <input type="text" id="influencerPhoto" class="auth-input" placeholder="https://...">
+                    </div>
+                    <button type="submit" class="primary-btn outline-btn">Actualizar Info Pública</button>
+                </form>
+
+                <h4>Agregar Recomendación</h4>
+                <form id="addRecommendationForm" class="dashboard-form">
+                    <div class="form-group">
+                        <label>Nombre del Lugar</label>
+                        <input type="text" id="recPlaceName" class="auth-input" required placeholder="Ej. El Mesón">
+                    </div>
+                    <div class="form-group">
+                        <label>Comentario Breve</label>
+                        <textarea id="recComment" class="auth-input" style="height: 100px; resize: none;" required placeholder="¿Por qué lo recomiendas?"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>URL del Video (Instagram Reels / TikTok / YouTube)</label>
+                        <input type="text" id="recVideoUrl" class="auth-input" required placeholder="https://www.instagram.com/reels/...">
+                    </div>
+                    <button type="submit" class="primary-btn">Subir Recomendación</button>
+                </form>
+
+                <div id="myRecommendationsList" style="margin-top: 2rem;">
+                    <!-- Lista de recomendaciones cargadas -->
+                </div>
             </div>
         </section>
 
