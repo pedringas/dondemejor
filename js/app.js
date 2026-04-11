@@ -72,6 +72,16 @@ const authPhone = document.getElementById('authPhone');
 const authSubmitBtn = document.getElementById('authSubmitBtn');
 const authTitle = document.getElementById('authTitle');
 
+// Nuevos Elementos Auth 2 Pasos
+const authChoiceView = document.getElementById('authChoiceView');
+const authFormView = document.getElementById('authFormView');
+const btnGoogleLogin = document.getElementById('btnGoogleLogin');
+const btnShowEmailForm = document.getElementById('btnShowEmailForm');
+const btnBackToChoice = document.getElementById('btnBackToChoice');
+const btnTogglePassword = document.getElementById('btnTogglePassword');
+const eyeOpen = document.getElementById('eyeOpen');
+const eyeClosed = document.getElementById('eyeClosed');
+
 // Dashboards DOM
 const searchSection = document.querySelector('.search-section');
 const resultsSection = document.querySelector('.results-section');
@@ -506,26 +516,29 @@ function handleSearch(e) {
 
 function executeSearch(query) {
     const searchQuery = query;
-    const searchRadius = 2000; // 2km estrictos
+    const searchRadius = 2000;
     let allResultsMap = new Map();
+
+    // Fallback: Centro de Córdoba si no hay ubicación del usuario
+    const searchCenter = userLocation || { lat: -31.4167, lng: -64.1833 };
 
     if (placesService) {
         const textSearchRequest = {
             query: searchQuery,
             fields: ['name', 'geometry', 'formatted_address', 'place_id', 'rating', 'user_ratings_total', 'photos', 'opening_hours', 'business_status'],
-            locationBias: { radius: searchRadius, center: userLocation }
+            locationBias: { radius: searchRadius, center: searchCenter }
         };
 
         const nearbyKeywordRequest = {
-            location: userLocation,
+            location: searchCenter,
             radius: searchRadius,
             keyword: searchQuery
         };
 
         const nearbyTypeRequest = {
-            location: userLocation,
+            location: searchCenter,
             radius: searchRadius,
-            type: ['cafe', 'restaurant', 'food', 'establishment'] // Tipos base para ampliar espectro
+            type: ['cafe', 'restaurant', 'food', 'establishment']
         };
 
         const fetchTextSearch = () => {
@@ -553,7 +566,6 @@ function executeSearch(query) {
         };
 
         const fetchNearbyType = () => {
-            // Solo lanzamos búsqueda por tipo si la query sugiere comida/cafe
             const isFoodQuery = /cafe|café|comida|restaurante|pizza|bar/i.test(searchQuery);
             if (!isFoodQuery) return Promise.resolve();
 
@@ -561,7 +573,6 @@ function executeSearch(query) {
                 placesService.nearbySearch(nearbyTypeRequest, (results, status) => {
                     if (status === google.maps.places.PlacesServiceStatus.OK && results) {
                         results.forEach(r => {
-                            // Si el nombre del lugar no contiene la palabra clave, lo ignoramos para no ensuciar
                             const matchesKeyword = r.name.toLowerCase().includes(searchQuery.toLowerCase());
                             if (matchesKeyword && !allResultsMap.has(r.place_id)) {
                                 allResultsMap.set(r.place_id, r);
@@ -573,8 +584,18 @@ function executeSearch(query) {
             });
         };
 
-        Promise.all([fetchTextSearch(), fetchNearbyKeyword(), fetchNearbyType()]).then(() => {
+        // Timeout de seguridad para no quedar buscando indefinidamente en móviles (8 segundos)
+        const timeoutPromise = new Promise(resolve => setTimeout(() => resolve('timeout'), 8000));
+
+        Promise.race([
+            Promise.all([fetchTextSearch(), fetchNearbyKeyword(), fetchNearbyType()]),
+            timeoutPromise
+        ]).then((val) => {
             loadingIndicator.classList.add('hidden');
+            if (val === 'timeout') {
+                console.warn("La búsqueda tardó demasiado, mostrando resultados parciales.");
+            }
+            
             const mergedResults = Array.from(allResultsMap.values());
             if (mergedResults.length > 0) {
                 processAndRenderResults(mergedResults);
@@ -593,39 +614,34 @@ function executeSearch(query) {
 }
 
 function processAndRenderResults(results) {
-    if(userLocation) {
-        let uLat = typeof userLocation.lat === 'function' ? userLocation.lat() : userLocation.lat;
-        let uLng = typeof userLocation.lng === 'function' ? userLocation.lng() : userLocation.lng;
-        results.forEach(p => {
-            if(p.geometry && p.geometry.location) {
-                let pLat = typeof p.geometry.location.lat === 'function' ? p.geometry.location.lat() : p.geometry.location.lat;
-                let pLng = typeof p.geometry.location.lng === 'function' ? p.geometry.location.lng() : p.geometry.location.lng;
-                p.distanceKm = getDistance(uLat, uLng, pLat, pLng);
-            } else {
-                p.distanceKm = 9999;
-            }
-            p.weightedScore = (p.rating || 0) + (Math.log10((p.user_ratings_total || 0) + 1) * 0.4);
-        });
-        
-        results.sort((a,b) => {
-            const aClose = a.distanceKm < 0.6;
-            const bClose = b.distanceKm < 0.6;
-            if(aClose && !bClose) return -1;
-            if(!aClose && bClose) return 1;
-            return b.weightedScore - a.weightedScore;
-        });
-    } else {
-        results.forEach(p => {
-            p.weightedScore = (p.rating || 0) + (Math.log10((p.user_ratings_total || 0) + 1) * 0.4);
-        });
-        results.sort((a,b) => b.weightedScore - a.weightedScore);
-    }
+    const referenceLocation = userLocation || { lat: -31.4167, lng: -64.1833 };
+    let uLat = typeof referenceLocation.lat === 'function' ? referenceLocation.lat() : referenceLocation.lat;
+    let uLng = typeof referenceLocation.lng === 'function' ? referenceLocation.lng() : referenceLocation.lng;
+
+    results.forEach(p => {
+        if(p.geometry && p.geometry.location) {
+            let pLat = typeof p.geometry.location.lat === 'function' ? p.geometry.location.lat() : p.geometry.location.lat;
+            let pLng = typeof p.geometry.location.lng === 'function' ? p.geometry.location.lng() : p.geometry.location.lng;
+            p.distanceKm = getDistance(uLat, uLng, pLat, pLng);
+        } else {
+            p.distanceKm = 9999;
+        }
+        p.weightedScore = (p.rating || 0) + (Math.log10((p.user_ratings_total || 0) + 1) * 0.4);
+    });
+    
+    results.sort((a,b) => {
+        const aClose = a.distanceKm < 0.6;
+        const bClose = b.distanceKm < 0.6;
+        if(aClose && !bClose) return -1;
+        if(!aClose && bClose) return 1;
+        return b.weightedScore - a.weightedScore;
+    });
     
     currentResults = results;
     viewControls.classList.remove('hidden');
     
     if(appMap && results.length > 0) {
-        appMap.setCenter(userLocation || results[0].geometry.location);
+        appMap.setCenter(referenceLocation || results[0].geometry.location);
     }
     
     renderCurrentView();
@@ -919,13 +935,13 @@ function renderModalContent(place, imageUrl, statusHtml, ratingHTML) {
         const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=18&size=600x300&markers=color:red%7C${lat},${lng}&key=${GOOGLE_MAPS_API_KEY}`;
         
         mapSnippetHtml = `
-            <div class="map-snippet-container" onclick="window.open('${directionsUrl}', '_blank')">
+            <a href="${directionsUrl}" target="_blank" rel="noopener noreferrer" class="map-snippet-container" style="display:block; text-decoration:none; position:relative;">
                 <img src="${staticMapUrl}" class="map-snippet-img" alt="Recorte de mapa de ${place.name}">
                 <div class="map-snippet-overlay">
                     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
                     <span>Ver indicaciones en Google Maps</span>
                 </div>
-            </div>
+            </a>
         `;
     }
 
@@ -1280,14 +1296,82 @@ document.getElementById('addRecommendationForm')?.addEventListener('submit', asy
     }
 });
 
+// ==========================================
+// Lógica de Autenticación Rediseñada
+// ==========================================
+
 function openAuthModal(mode = 'login') {
     authModal.classList.remove('hidden');
+    resetAuthViews(mode);
+}
+
+function resetAuthViews(mode = 'login') {
+    authChoiceView.classList.remove('hidden');
+    authFormView.classList.add('hidden');
     switchAuthTab(mode);
+}
+
+function switchToEmailForm() {
+    authChoiceView.classList.add('hidden');
+    authFormView.classList.remove('hidden');
 }
 
 function closeAuthModal() {
     authModal.classList.add('hidden');
     authForm.reset();
+}
+
+btnShowEmailForm?.addEventListener('click', switchToEmailForm);
+btnBackToChoice?.addEventListener('click', () => resetAuthViews(currentAuthMode));
+
+// Google Login
+btnGoogleLogin?.addEventListener('click', handleGoogleLogin);
+
+async function handleGoogleLogin() {
+    const provider = new firebase.auth.GoogleAuthProvider();
+    try {
+        const result = await auth.signInWithPopup(provider);
+        const user = result.user;
+        
+        // Verificar si el usuario ya existe en Firestore para no sobreescribir datos como 'role'
+        const userDoc = await db.collection('users').doc(user.uid).get();
+        if (!userDoc.exists) {
+            await db.collection('users').doc(user.uid).set({
+                name: user.displayName,
+                email: user.email,
+                phone: "-",
+                role: "user",
+                is_influencer: false,
+                is_approved: false,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+        }
+        
+        closeAuthModal();
+        alert("¡Bienvenido, " + user.displayName + "!");
+    } catch (error) {
+        if (error.code === 'auth/operation-not-allowed') {
+            alert("Error: El inicio de sesión con Google no está habilitado en Firebase Console.");
+        } else {
+            alert("Error al iniciar con Google: " + error.message);
+        }
+    }
+}
+
+// Toggle Visibilidad Contraseña
+btnTogglePassword?.addEventListener('click', togglePasswordVisibility);
+
+function togglePasswordVisibility() {
+    const type = authPassword.getAttribute('type') === 'password' ? 'text' : 'password';
+    authPassword.setAttribute('type', type);
+    
+    if (type === 'text') {
+        eyeOpen.classList.add('hidden');
+        eyeClosed.classList.remove('hidden');
+    } else {
+        eyeOpen.classList.remove('hidden');
+        eyeClosed.classList.add('hidden');
+    }
 }
 
 function switchAuthTab(mode) {
@@ -1336,6 +1420,8 @@ async function handleAuthSubmit(e) {
                 email: email,
                 phone: phone,
                 role: "user",
+                is_influencer: false,
+                is_approved: false,
                 createdAt: firebase.firestore.FieldValue.serverTimestamp()
             });
             
