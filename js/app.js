@@ -1123,9 +1123,24 @@ function initAuth() {
             const doc = await db.collection('users').doc(user.uid).get();
             if (doc.exists) {
                 currentUserData = doc.data();
+                
+                // AUTO-PROMOCIÓN: Si es el mail de admin, asegurar que tenga el rol
+                if (user.email === 'admin@dondeen.com' && currentUserData.role !== 'admin') {
+                    await db.collection('users').doc(user.uid).update({ role: 'admin' });
+                    currentUserData.role = 'admin';
+                }
             } else {
-                // Si no tiene perfil (ej. migrado recientemente), crear uno básico
-                currentUserData = { name: user.displayName || user.email.split('@')[0], email: user.email, role: 'user' };
+                // Si no tiene perfil, crear uno básico (y si es admin, darle el rol)
+                const isDefaultAdmin = user.email === 'admin@dondeen.com';
+                currentUserData = { 
+                    name: user.displayName || user.email.split('@')[0], 
+                    email: user.email, 
+                    role: isDefaultAdmin ? 'admin' : 'user' 
+                };
+                
+                if (isDefaultAdmin) {
+                    await db.collection('users').doc(user.uid).set(currentUserData);
+                }
             }
             
             // Lógica de Migración Automática: Buscar favoritos viejos en PC
