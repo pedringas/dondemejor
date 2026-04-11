@@ -1491,6 +1491,11 @@ function showHome() {
     if(resultsSection) resultsSection.classList.remove('hidden');
 }
 
+const influencerMetaForm = document.getElementById('influencerMetaForm');
+const influencerInsta = document.getElementById('influencerInsta');
+const influencerPhoto = document.getElementById('influencerPhoto');
+const influencerPanel = document.getElementById('influencerPanel');
+
 async function openUserDashboard() {
     if (!currentUser || !currentUserData) return;
     
@@ -1498,8 +1503,52 @@ async function openUserDashboard() {
     profileEmailText.textContent = currentUser.email || "";
     profilePhone.value = currentUserData.phone || "";
     
+    // Mostrar/Ocultar Panel de Influencer
+    if (currentUserData.is_influencer && currentUserData.is_approved) {
+        influencerPanel?.classList.remove('hidden');
+        influencerInsta.value = currentUserData.instagramHandle || "";
+        influencerPhoto.value = currentUserData.photoUrl || "";
+    } else {
+        influencerPanel?.classList.add('hidden');
+    }
+    
     hideAllSections();
     userDashboardSection.classList.remove('hidden');
+}
+
+// Guardar Info de Influencer
+influencerMetaForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!currentUser) return;
+    
+    const rawInsta = influencerInsta.value.trim();
+    const handle = extractInstagramHandle(rawInsta);
+    const photo = influencerPhoto.value.trim();
+    
+    try {
+        await db.collection('users').doc(currentUser.uid).update({
+            instagramHandle: handle,
+            photoUrl: photo,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        
+        currentUserData.instagramHandle = handle;
+        currentUserData.photoUrl = photo;
+        
+        alert("¡Información de influencer actualizada!");
+        loadInfluencers();
+    } catch (e) {
+        alert("Error al guardar: " + e.message);
+    }
+});
+
+function extractInstagramHandle(input) {
+    if (!input) return "";
+    let handle = input.replace(/^@/, '');
+    if (handle.includes('instagram.com/')) {
+        handle = handle.split('instagram.com/')[1].split('/')[0].split('?')[0];
+    }
+    return handle;
 }
 
 async function handleProfileUpdate(e) {
@@ -1782,11 +1831,25 @@ async function loadInfluencers() {
         let html = '';
         snapshot.forEach(doc => {
             const data = doc.data();
+            
+            // Lógica de Foto de Perfil Inteligente
+            let finalPhoto = data.photoUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&h=200&fit=crop';
+            
+            // Si hay handle de Instagram y no hay foto manual, usamos unavatar
+            if (data.instagramHandle && !data.photoUrl) {
+                finalPhoto = `https://unavatar.io/instagram/${data.instagramHandle}`;
+            }
+
             html += `
                 <div class="influencer-card" onclick="openInfluencerProfile('${doc.id}', '${data.name}')">
-                    <img src="${data.photoUrl || 'https://via.placeholder.com/80'}" class="influencer-avatar" alt="${data.name}">
+                    <div style="position: relative; width: 80px; height: 80px; margin: 0 auto 0.8rem;">
+                        <img src="${finalPhoto}" 
+                             class="influencer-avatar" 
+                             alt="${data.name}"
+                             onerror="this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(data.name)}&background=random&color=fff'">
+                    </div>
                     <div class="influencer-name">${data.name}</div>
-                    <div class="influencer-handle">${data.instagramHandle || '@influencer'}</div>
+                    <div class="influencer-handle">@${data.instagramHandle || 'dondeen_user'}</div>
                 </div>
             `;
         });
