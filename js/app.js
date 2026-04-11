@@ -506,47 +506,84 @@ function handleSearch(e) {
 
 function executeSearch(query) {
     const searchQuery = query;
-    let allResults = [];
-    let pagesFetched = 0;
+    const searchRadius = 2000; // 2km estrictos
+    let allResultsMap = new Map();
 
     if (placesService) {
-        const request = {
+        const textSearchRequest = {
             query: searchQuery,
-            fields: ['name', 'geometry', 'formatted_address', 'place_id', 'rating', 'user_ratings_total', 'photos', 'opening_hours', 'business_status']
+            fields: ['name', 'geometry', 'formatted_address', 'place_id', 'rating', 'user_ratings_total', 'photos', 'opening_hours', 'business_status'],
+            locationBias: { radius: searchRadius, center: userLocation }
         };
 
-        if (userLocation && typeof userLocation.lat === 'function') {
-            request.location = userLocation;
-            request.radius = 10000;
-        }
+        const nearbyKeywordRequest = {
+            location: userLocation,
+            radius: searchRadius,
+            keyword: searchQuery
+        };
 
-        const handleResults = (results, status, pagination) => {
-            if (status === google.maps.places.PlacesServiceStatus.OK && results) {
-                allResults = allResults.concat(results);
-                pagesFetched++;
+        const nearbyTypeRequest = {
+            location: userLocation,
+            radius: searchRadius,
+            type: ['cafe', 'restaurant', 'food', 'establishment'] // Tipos base para ampliar espectro
+        };
 
-                // Si hay más páginas y no llegamos al límite de 3 (60 resultados)
-                if (pagination && pagination.hasNextPage && pagesFetched < 3) {
-                    // Google requiere un pequeño delay para la siguiente página
-                    setTimeout(() => pagination.nextPage(), 2000);
-                    return;
-                }
+        const fetchTextSearch = () => {
+            return new Promise((resolve) => {
+                placesService.textSearch(textSearchRequest, (results, status) => {
+                    if (status === google.maps.places.PlacesServiceStatus.OK && results) {
+                        results.forEach(r => allResultsMap.set(r.place_id, r));
+                    }
+                    resolve();
+                });
+            });
+        };
 
-                loadingIndicator.classList.add('hidden');
-                processAndRenderResults(allResults);
+        const fetchNearbyKeyword = () => {
+            return new Promise((resolve) => {
+                placesService.nearbySearch(nearbyKeywordRequest, (results, status) => {
+                    if (status === google.maps.places.PlacesServiceStatus.OK && results) {
+                        results.forEach(r => {
+                            if (!allResultsMap.has(r.place_id)) allResultsMap.set(r.place_id, r);
+                        });
+                    }
+                    resolve();
+                });
+            });
+        };
+
+        const fetchNearbyType = () => {
+            // Solo lanzamos búsqueda por tipo si la query sugiere comida/cafe
+            const isFoodQuery = /cafe|café|comida|restaurante|pizza|bar/i.test(searchQuery);
+            if (!isFoodQuery) return Promise.resolve();
+
+            return new Promise((resolve) => {
+                placesService.nearbySearch(nearbyTypeRequest, (results, status) => {
+                    if (status === google.maps.places.PlacesServiceStatus.OK && results) {
+                        results.forEach(r => {
+                            // Si el nombre del lugar no contiene la palabra clave, lo ignoramos para no ensuciar
+                            const matchesKeyword = r.name.toLowerCase().includes(searchQuery.toLowerCase());
+                            if (matchesKeyword && !allResultsMap.has(r.place_id)) {
+                                allResultsMap.set(r.place_id, r);
+                            }
+                        });
+                    }
+                    resolve();
+                });
+            });
+        };
+
+        Promise.all([fetchTextSearch(), fetchNearbyKeyword(), fetchNearbyType()]).then(() => {
+            loadingIndicator.classList.add('hidden');
+            const mergedResults = Array.from(allResultsMap.values());
+            if (mergedResults.length > 0) {
+                processAndRenderResults(mergedResults);
             } else {
-                loadingIndicator.classList.add('hidden');
-                if (allResults.length > 0) {
-                    processAndRenderResults(allResults);
-                } else {
-                    renderError(i18n[userLang].error_api + `<br><b>${status}</b>`);
-                }
+                renderError(i18n[userLang].error_no_results);
             }
-        };
+        });
 
-        placesService.textSearch(request, handleResults);
     } else {
-        // Mock data logic remains similar but simplified
         setTimeout(() => {
             loadingIndicator.classList.add('hidden');
             let mockData = getMockData(query);
@@ -567,12 +604,9 @@ function processAndRenderResults(results) {
             } else {
                 p.distanceKm = 9999;
             }
-            // Algoritmo de ranking ponderado: Rating + (log10(reviews) * factor)
             p.weightedScore = (p.rating || 0) + (Math.log10((p.user_ratings_total || 0) + 1) * 0.4);
         });
         
-        // Ordenamos: 
-        // 1. Cercanía (<600m) tienen prioridad visual, pero dentro de su grupo se ordenan por weightedScore.
         results.sort((a,b) => {
             const aClose = a.distanceKm < 0.6;
             const bClose = b.distanceKm < 0.6;
@@ -822,6 +856,15 @@ function renderMarkers() {
     
     if(!bounds.isEmpty()){
         appMap.fitBounds(bounds);
+        
+        // Listener de una sola vez para ajustar el zoom si fitBounds lo alejó demasiado
+        const listener = google.maps.event.addListener(appMap, 'idle', () => {
+            if (appMap.getZoom() < 15) {
+                appMap.setZoom(16);
+                if (userLocation) appMap.setCenter(userLocation);
+            }
+            google.maps.event.removeListener(listener);
+        });
     }
 }
 
@@ -836,7 +879,7 @@ function openPlaceDetails(placeContext, imageUrl, statusHtml, ratingHTML) {
 
         placesService.getDetails({
             placeId: placeContext.place_id,
-            fields: ['name', 'formatted_address', 'formatted_phone_number', 'website', 'rating', 'user_ratings_total', 'reviews', 'opening_hours', 'url', 'photos']
+            fields: ['name', 'geometry', 'formatted_address', 'formatted_phone_number', 'website', 'rating', 'user_ratings_total', 'reviews', 'opening_hours', 'url', 'photos']
         }, (placeDetails, status) => {
             if (status === google.maps.places.PlacesServiceStatus.OK) {
                 renderModalContent(placeDetails, imageUrl, statusHtml, ratingHTML);
@@ -873,7 +916,7 @@ function renderModalContent(place, imageUrl, statusHtml, ratingHTML) {
         const lat = typeof place.geometry.location.lat === 'function' ? place.geometry.location.lat() : place.geometry.location.lat;
         const lng = typeof place.geometry.location.lng === 'function' ? place.geometry.location.lng() : place.geometry.location.lng;
         
-        const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=15&size=600x300&markers=color:red%7C${lat},${lng}&key=${GOOGLE_MAPS_API_KEY}`;
+        const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=18&size=600x300&markers=color:red%7C${lat},${lng}&key=${GOOGLE_MAPS_API_KEY}`;
         
         mapSnippetHtml = `
             <div class="map-snippet-container" onclick="window.open('${directionsUrl}', '_blank')">
